@@ -216,6 +216,7 @@ var FluentQueryBuilder = class {
     this.options = {
       end: Infinity,
       mapFn: (item) => item,
+      filterFn: (value) => !!value,
       orderBy: "next",
       start: 0
     };
@@ -279,26 +280,26 @@ var FluentQueryBuilder = class {
       const offset = this.options.start ?? 0;
       const limit = this.options.end ?? Infinity;
       const mapFunc = this.options.mapFn;
-      let hasAdvanced = false;
-      const tableName = this.table;
+      const filterFn = this.options.filterFn;
+      let skipped = 0;
+      let collected = 0;
       request.onsuccess = () => {
         const cursor = request.result;
-        if (!cursor) return resolve(results.map(mapFunc));
-        if (offset > 0 && !hasAdvanced) {
-          hasAdvanced = true;
-          try {
-            cursor.advance(offset);
-          } catch {
-            resolve(results.map(mapFunc));
+        if (!cursor) {
+          return resolve(results.map(mapFunc));
+        }
+        const value = cursor.value;
+        const passesFilter = filterFn ? filterFn(value) : true;
+        if (passesFilter) {
+          if (skipped < offset) skipped++;
+          else if (collected < limit) {
+            results.push(value);
+            collected++;
+          } else {
+            return resolve(results.map(mapFunc));
           }
-          return;
         }
-        if (results.length < limit) {
-          results.push(cursor.value);
-          cursor.continue();
-        } else {
-          resolve(results.map(mapFunc));
-        }
+        cursor.continue();
       };
       request.onerror = () => {
         reject(
@@ -334,6 +335,10 @@ var FluentQueryBuilder = class {
         );
       };
     });
+  }
+  filter(filterFn = () => true) {
+    this.options.filterFn = filterFn;
+    return this;
   }
   keys() {
     this.options.keysOnly = true;

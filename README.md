@@ -1,8 +1,8 @@
 # fluent-idb
 
-[![npm version](https://img.shields.io/npm/v/fluent-idb.svg)](https://www.npmjs.com/package/fluent-idb)
-[![license](https://img.shields.io/npm/l/fluent-idb.svg)](https://github.com/qwars/fluent-idb/blob/main/LICENSE)
-[![bundle size](https://img.shields.io/bundlephobia/minzip/fluent-idb)](https://bundlephobia.com/package/fluent-idb)
+![npm version](https://img.shields.io/npm/v/fluent-idb.svg)
+![license](https://img.shields.io/npm/l/fluent-idb.svg)
+![bundle size](https://img.shields.io/bundlephobia/minzip/fluent-idb)
 
 A lightweight, type-safe wrapper over IndexedDB featuring a fluent API, batch processing, built-in gzip compression, and reliable automatic schema migrations.
 
@@ -10,13 +10,11 @@ A lightweight, type-safe wrapper over IndexedDB featuring a fluent API, batch pr
 
 Native IndexedDB is powerful but verbose and prone to errors when managing transactions, versions, and cursors. `fluent-idb` solves these problems by providing:
 
-- **Fluent API**: Intuitive method chaining for complex queries (e.g., `.query().range().desc().limit().execute()`).
-- **Smart Queue & Batching**: Groups multiple CRUD operations into a single transaction (`queueCreate`, `queueUpdate`, `queueFlush`), drastically reducing I/O overhead.
-- **Built-in Compression**: Automatic gzip compression and decompression of large text fields (e.g., document content or JSON) via the browser's native `CompressionStream` API.
-- **Type Safety**: Full TypeScript support with strict schema definitions, guaranteeing type correctness for keys and records.
-- **Auto-Recovery & Migrations**: Deep integrity checks, automatic schema migrations, and recovery mechanisms to prevent database corruption or locking issues across multiple tabs.
-
----
+- **Fluent API:** Intuitive method chaining for complex queries (e.g., `.query().range().desc().limit().execute()`).
+- **Smart Queue & Batching:** Groups multiple CRUD operations into a single transaction (`queueCreate`, `queueUpdate`, `queueFlush`), drastically reducing I/O overhead.
+- **Built-in Compression:** Automatic gzip compression and decompression of large text fields (e.g., document content or JSON) via the browser's native `CompressionStream` API.
+- **Type Safety:** Full TypeScript support with strict schema definitions, guaranteeing type correctness for keys and records.
+- **Auto-Recovery & Migrations:** Deep integrity checks, automatic schema migrations, and recovery mechanisms to prevent database corruption or locking issues across multiple tabs.
 
 ## 📦 Installation
 
@@ -28,18 +26,16 @@ yarn add fluent-idb
 pnpm add fluent-idb
 ```
 
----
-
 ## 🚀 Quick Start
 
 ### 1. Define the Schema and Indexes
 
 The schema is defined using a `Map`. The order and type of elements in the field array are significant:
 
-1. **The first element** is always the `keyPath` (primary key). It must be unique (typically `uuid` or `id`).
-2. **Subsequent strings** automatically become regular indexes to accelerate searches.
-3. **Arrays of strings** (e.g., `['documentUUID', 'updated']`) create **composite indexes** for complex queries.
-4. **Objects with a `compress` flag** (e.g., `{ compress: true, name: 'content' }`) indicate that this field should be automatically compressed on write and decompressed on read.
+- The **first element** is always the `keyPath` (primary key). It must be unique (typically `uuid` or `id`).
+- **Subsequent strings** automatically become regular indexes to accelerate searches.
+- **Arrays of strings** (e.g., `['documentUUID', 'updated']`) create composite indexes for complex queries.
+- **Objects with a `compress` flag** (e.g., `{ compress: true, name: 'content' }`) indicate that this field should be automatically compressed on write and decompressed on read.
 
 ```typescript
 import type { Schema } from "fluent-idb";
@@ -70,19 +66,19 @@ export const MY_SCHEMA: Schema = new Map([
 
 ### 2. Initialize the Database
 
-Use the built-in `getDatabase` function. It handles opening, security checks, and **automatic schema migration** (adds new tables/indexes or removes obsolete ones when the version changes).
+Use the built-in `getDatabase` function. It handles opening, security checks, and automatic schema migration (adds new tables/indexes or removes obsolete ones when the version changes).
 
 ```typescript
 import { getDatabase, FluentTable } from "fluent-idb";
 
 // Connect and migrate if necessary (version 1)
-const db = await getDatabase("my_app_db", 1);
+const db = await getDatabase("my_app_db", 1, { schema: MY_SCHEMA });
 
 // Initialize a strictly typed table instance
-const documentsTable = new FluentTable<"Documents">("Documents", db);
+const documentsTable = new FluentTable<DocumentType>("Documents", db, {
+  schema: MY_SCHEMA,
+});
 ```
-
----
 
 ## 📝 CRUD Operations
 
@@ -126,7 +122,8 @@ const firstMatch = await documentsTable.get({
 // Updates an existing record or creates a new one if the key doesn't exist (upsert)
 await documentsTable.update({
   uuid: "123e4567-e89b-12d3-a456-426614174000",
-  value: { status: "approved" }, // Other fields (e.g., content) are preserved unless explicitly overwritten via put
+  value: { status: "approved" },
+  // Other fields (e.g., content) are preserved unless explicitly overwritten via put
 });
 
 // Alternative: `put` for complete record replacement
@@ -151,8 +148,6 @@ await documentsTable.remove({ gte: "2023-01-01", lt: "2024-01-01" });
 await documentsTable.clear();
 ```
 
----
-
 ## 🔍 Advanced Queries (Query Builder)
 
 The Fluent API allows you to build complex queries with filtering, sorting, and pagination, leveraging the defined indexes.
@@ -160,7 +155,6 @@ The Fluent API allows you to build complex queries with filtering, sorting, and 
 ```typescript
 // Example 1: Get the 10 most recently updated documents from the last week
 const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-
 const recentDocs = await documentsTable
   .query("updated") // Use the 'updated' index
   .range({ gte: oneWeekAgo })
@@ -189,17 +183,74 @@ const uniqueHistory = await historyTable
   .execute();
 ```
 
----
+### Filtering and Transforming Results
+
+#### `filter(fn)` — Client-side filtering
+
+Use `filter()` when you need to filter by complex conditions that IndexedDB indexes cannot handle (e.g., nested object properties, regex, or computed values). The filtering happens in JavaScript _after_ records are read from the database.
+
+```typescript
+// Find users whose name starts with "A" and age is even
+const filtered = await usersTable
+  .query()
+  .filter((user) => user.name.startsWith("A") && user.age % 2 === 0)
+  .execute();
+```
+
+> 💡 **Tip:** `filter()` runs in memory, so for large tables it's more efficient to narrow down the dataset using `.range()` on an index first, and then apply `filter()`.
+
+#### `map(fn)` — Transform results on the fly
+
+Apply a transformation function to each record before the final array is returned. Useful for projecting only specific fields or converting data shapes without a separate `.map()` call on the result.
+
+```typescript
+// Return only a lightweight projection of each document
+const summaries = await documentsTable
+  .query("updated")
+  .desc()
+  .map((doc) => ({
+    id: doc.uuid,
+    title: doc.value?.title ?? "Untitled",
+    lastModified: doc.updated,
+  }))
+  .execute();
+```
+
+### Alternative Range Methods
+
+Besides the versatile `.range({ ... })`, you can use these more semantic alternatives:
+
+```typescript
+// Exact match (equivalent to .range({ eq: "deal-123" }))
+await table.query("dealUUID").only("deal-123").execute();
+
+// Open lower bound (equivalent to .range({ gt: startDate }))
+await table.query("updated").lowerBound(startDate, true).execute();
+
+// Closed upper bound (equivalent to .range({ lte: maxId }))
+await table.query("id").upperBound(maxId, false).execute();
+```
+
+### Direct Table Methods
+
+For simple operations, you can bypass the query builder entirely:
+
+```typescript
+// Count records matching a condition (without building a query)
+const totalActive = await documentsTable.count({ eq: "active" });
+const rangeCount = await documentsTable.count({ gte: "a", lt: "m" });
+
+// Clear the entire table in a single transaction
+await documentsTable.clear();
+```
 
 ## 🗜️ Built-in Compression
 
 The library automatically compresses fields marked in the schema as `{ compress: true, name: 'fieldName' }`.
 
-- **How it works**: When calling `create`, `update`, or `queueFlush`, the string value of the field is converted into a `Uint8Array` using the browser's native `CompressionStream('gzip')`. Upon reading (`get`, `execute`), it is seamlessly decompressed via `DecompressionStream`.
-- **Why it matters**: Perfect for storing large text blocks, HTML content, or serialized JSON objects, saving up to 70–90% of space in the IndexedDB quota.
-- **Requirements**: Supported in all modern browsers (Chrome 80+, Firefox 113+, Safari 16.4+). In older environments, the field is saved as-is (graceful degradation).
-
----
+- **How it works:** When calling `create`, `update`, or `queueFlush`, the string value of the field is converted into a `Uint8Array` using the browser's native `CompressionStream('gzip')`. Upon reading (`get`, `execute`), it is seamlessly decompressed via `DecompressionStream`.
+- **Why it matters:** Perfect for storing large text blocks, HTML content, or serialized JSON objects, saving up to 70–90% of space in the IndexedDB quota.
+- **Requirements:** Supported in all modern browsers (Chrome 80+, Firefox 113+, Safari 16.4+). In older environments, the field is saved as-is (graceful degradation).
 
 ## ⚡ High-Performance Queue (Batching)
 
@@ -216,7 +267,6 @@ for (let i = 0; i < 1000; i++) {
     value: { status: "processed" },
     updated: new Date(),
   });
-
   // Smart optimization: if you call queueDelete for the same key,
   // the previous create/update operation is automatically canceled before flush.
 }
@@ -228,18 +278,14 @@ await documentsTable.queueFlush();
 documentsTable.queueSetAutoFlush(true);
 ```
 
----
-
 ## ⚙️ Compatibility & Migrations
 
-- **Browsers**: Modern browsers with support for IndexedDB and the `CompressionStream` API.
-- **Frameworks**: Fully compatible with React, Vue, Svelte, Vite, Imba, and vanilla JS/TS.
-- **Migrations**: When you update `MY_SCHEMA` and increment the version in `getDatabase("my_app_db", 2)`, the library automatically:
-  1. Creates new tables or indexes.
-  2. Removes obsolete indexes not present in the new schema.
-  3. Performs data "normalization": adds missing fields to existing records with default values to prevent `undefined` errors.
-
----
+- **Browsers:** Modern browsers with support for IndexedDB and the `CompressionStream` API.
+- **Frameworks:** Fully compatible with React, Vue, Svelte, Vite, Imba, and vanilla JS/TS.
+- **Migrations:** When you update `MY_SCHEMA` and increment the version in `getDatabase("my_app_db", 2, ...)`, the library automatically:
+  - Creates new tables or indexes.
+  - Removes obsolete indexes not present in the new schema.
+  - Performs data "normalization": adds missing fields to existing records with default values to prevent `undefined` errors.
 
 ## 📄 License
 

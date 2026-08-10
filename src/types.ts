@@ -16,7 +16,9 @@ export type TableName = string;
  * - object: field with additional options (e.g., compression)
  */
 export type SchemaField =
-  string | string[] | { name: string; compress?: boolean; unique?: boolean };
+  | string
+  | string[]
+  | { name: string; compress?: boolean; unique?: boolean };
 
 /**
  * Database schema definition.
@@ -48,7 +50,12 @@ export interface Operation<T> {
  * Valid key range values for IndexedDB queries.
  */
 export type IDBKeyRangeValue =
-  number | string | Date | ArrayBuffer | ArrayBufferView | IDBValidKey[];
+  | number
+  | string
+  | Date
+  | ArrayBuffer
+  | ArrayBufferView
+  | IDBValidKey[];
 
 /**
  * Key-value pair for building query ranges.
@@ -72,6 +79,7 @@ export type RecordInput<T> = { item: T; key?: IDBValidKey } | T | T[];
 export interface OptionsKeyValuePair<T> extends KeyValuePair {
   end: number;
   mapFn: (value: T) => T;
+  filterFn?: (value: T) => boolean;
   orderBy: IDBCursorDirection;
   start: number;
   asc?: boolean;

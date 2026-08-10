@@ -67,6 +67,7 @@ type RecordInput<T> = {
 interface OptionsKeyValuePair<T> extends KeyValuePair {
     end: number;
     mapFn: (value: T) => T;
+    filterFn?: (value: T) => boolean;
     orderBy: IDBCursorDirection;
     start: number;
     asc?: boolean;
@@ -102,6 +103,7 @@ declare class FluentQueryBuilder<T> {
     distinct(): this;
     execute(): Promise<T[]>;
     executeKeys(): Promise<IDBValidKey[]>;
+    filter(filterFn?: (value: T) => boolean): this;
     keys(): this;
     limit(offset?: number, count?: number): this;
     lowerBound(value: IDBValidKey, open?: boolean): this;
