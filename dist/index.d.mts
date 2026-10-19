@@ -92,10 +92,10 @@ declare function decompressRecord<T>(tableName: string, record: T | undefined, s
 declare class FluentQueryBuilder<T> {
     indexName: null | string;
     keyRange: IDBKeyRange | null;
-    options: OptionsKeyValuePair<T>;
     table: string;
     transaction: IDBTransaction;
     debug: boolean;
+    private options;
     constructor(transaction: IDBTransaction, indexName?: null | string, debug?: boolean);
     asc(): this;
     count(): Promise<number>;
@@ -119,6 +119,7 @@ declare class FluentTable<T> {
     private commandQueue;
     private database;
     private flushTimeout;
+    private keyPathCache;
     private tableName;
     private config;
     constructor(tableName: string, database: IDBDatabaseStates, config: FluentConfig);

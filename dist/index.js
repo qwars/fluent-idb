@@ -180,39 +180,59 @@ async function compressRecord(tableName, record, schema) {
   const fields = schema.get(tableName);
   if (!fields) return record;
   const cloned = { ...record };
-  let needsCompression = false;
+  const compressFields = [];
   for (const f of fields) {
     if (typeof f === "object" && f !== null && "name" in f && f.compress) {
       const fieldName = f.name;
       if (typeof cloned[fieldName] === "string") {
-        cloned[fieldName] = await compressString(cloned[fieldName]);
-        needsCompression = true;
+        compressFields.push(
+          compressString(cloned[fieldName]).then((compressed) => {
+            cloned[fieldName] = compressed;
+          })
+        );
       }
     }
   }
-  return needsCompression ? cloned : record;
+  if (compressFields.length > 0) {
+    await Promise.all(compressFields);
+    return cloned;
+  }
+  return record;
 }
 async function decompressRecord(tableName, record, schema) {
   if (!record || !isCompressionSupported) return record;
   const fields = schema.get(tableName);
   if (!fields) return record;
   const cloned = { ...record };
-  let needsDecompression = false;
+  const decompressFields = [];
   for (const f of fields) {
     if (typeof f === "object" && f !== null && "name" in f && f.compress) {
       const fieldName = f.name;
       if (cloned[fieldName] instanceof Uint8Array) {
-        cloned[fieldName] = await decompressString(cloned[fieldName]);
-        needsDecompression = true;
+        decompressFields.push(
+          decompressString(cloned[fieldName]).then((decompressed) => {
+            cloned[fieldName] = decompressed;
+          })
+        );
       }
     }
   }
-  return needsDecompression ? cloned : record;
+  if (decompressFields.length > 0) {
+    await Promise.all(decompressFields);
+    return cloned;
+  }
+  return record;
 }
 var FluentQueryBuilder = class {
   constructor(transaction, indexName = null, debug = false) {
     this.indexName = null;
     this.keyRange = null;
+    const { objectStoreNames } = transaction;
+    const tableName = objectStoreNames[0];
+    this.transaction = transaction;
+    this.table = tableName;
+    this.indexName = indexName;
+    this.debug = debug;
     this.options = {
       end: Infinity,
       mapFn: (item) => item,
@@ -220,12 +240,6 @@ var FluentQueryBuilder = class {
       orderBy: "next",
       start: 0
     };
-    const { objectStoreNames } = transaction;
-    const tableName = objectStoreNames[0];
-    this.transaction = transaction;
-    this.table = tableName;
-    this.indexName = indexName;
-    this.debug = debug;
   }
   asc() {
     if (this.options.desc && this.debug) {
@@ -281,8 +295,8 @@ var FluentQueryBuilder = class {
       const limit = this.options.end ?? Infinity;
       const mapFunc = this.options.mapFn;
       const filterFn = this.options.filterFn;
-      let skipped = 0;
-      let collected = 0;
+      const useAdvance = offset > 0 || limit < Infinity;
+      let seen = 0;
       request.onsuccess = () => {
         const cursor = request.result;
         if (!cursor) {
@@ -291,15 +305,32 @@ var FluentQueryBuilder = class {
         const value = cursor.value;
         const passesFilter = filterFn ? filterFn(value) : true;
         if (passesFilter) {
-          if (skipped < offset) skipped++;
-          else if (collected < limit) {
-            results.push(value);
-            collected++;
+          if (useAdvance) {
+            if (seen < offset) {
+              seen++;
+              cursor.advance(1);
+            } else if (results.length < limit) {
+              results.push(value);
+              seen++;
+              if (results.length === limit) {
+                return resolve(results.map(mapFunc));
+              }
+              cursor.advance(1);
+            } else {
+              seen++;
+              cursor.advance(1);
+            }
           } else {
-            return resolve(results.map(mapFunc));
+            results.push(value);
+            cursor.continue();
+          }
+        } else {
+          if (useAdvance) {
+            cursor.advance(1);
+          } else {
+            cursor.continue();
           }
         }
-        cursor.continue();
       };
       request.onerror = () => {
         reject(
@@ -456,7 +487,7 @@ var FluentTable = class {
   }
   async create(record) {
     if (this.config.debug)
-      console.warn(`[FluentTable] create \u2192 ${this.tableName}`, record);
+      console.log(`[FluentTable] create \u2192 ${this.tableName}`, record);
     this.queueCreate(record);
     await this.queueFlush();
     return record;
@@ -550,13 +581,13 @@ var FluentTable = class {
     if (!existing) {
       this.commandQueue.set(key, { key, record, type: "create" });
       if (this.config.debug)
-        console.warn(
+        console.log(
           `[Queue] create \u2192 added: ${this.formatKeyForLogging(key)}`
         );
     } else {
       this.commandQueue.set(key, { key, record, type: "create" });
       if (this.config.debug)
-        console.warn(
+        console.log(
           `[Queue] create \u2192 updated: ${this.formatKeyForLogging(key)}`
         );
     }
@@ -570,20 +601,20 @@ var FluentTable = class {
     if (!existing) {
       this.commandQueue.set(key, { key, type: "delete" });
       if (this.config.debug)
-        console.warn(
+        console.log(
           `[Queue] delete \u2192 added: ${this.formatKeyForLogging(key)}`
         );
     } else {
       if (existing.type === "create") {
         this.commandQueue.delete(key);
         if (this.config.debug)
-          console.warn(
+          console.log(
             `[Queue] delete after create \u2192 operation cancelled: ${this.formatKeyForLogging(key)}`
           );
       } else if (existing.type === "update") {
         this.commandQueue.set(key, { key, type: "delete" });
         if (this.config.debug)
-          console.warn(
+          console.log(
             `[Queue] delete \u2192 replaces update: ${this.formatKeyForLogging(key)}`
           );
       }
@@ -594,23 +625,32 @@ var FluentTable = class {
   async queueFlush() {
     if (this.commandQueue.size === 0) {
       if (this.config.debug)
-        console.warn(
+        console.log(
           `[Flush] Nothing to execute for table "${this.tableName}"`
         );
       return;
     }
     const operations = Array.from(this.commandQueue.values());
-    for (const op of operations) {
-      if (op.record && (op.type === "create" || op.type === "update")) {
-        op.record = await compressRecord(
-          this.tableName,
-          op.record,
-          this.config.schema
-        );
+    const compressOps = operations.filter(
+      (op) => op.record && (op.type === "create" || op.type === "update")
+    );
+    if (compressOps.length > 0) {
+      const compressed = await Promise.all(
+        compressOps.map(async (op) => ({
+          op,
+          record: await compressRecord(
+            this.tableName,
+            op.record,
+            this.config.schema
+          )
+        }))
+      );
+      for (const { op, record } of compressed) {
+        op.record = record;
       }
     }
     if (this.config.debug) {
-      console.warn(
+      console.log(
         `[Flush] Executing ${operations.length} operations for "${this.tableName}"`
       );
     }
@@ -619,21 +659,30 @@ var FluentTable = class {
     return new Promise((resolve, reject) => {
       for (const op of operations) {
         switch (op.type) {
-          case "create":
-            objectStore.add(op.record);
+          case "create": {
+            const req = objectStore.add(op.record);
+            req.onerror = () => {
+              this.commandQueue.clear();
+              reject(
+                new Error(
+                  `[Flush] Duplicate key for create operation: ${this.formatKeyForLogging(op.key)}`
+                )
+              );
+            };
+            break;
+          }
+          case "update":
+            objectStore.put(op.record);
             break;
           case "delete":
             objectStore.delete(op.key);
-            break;
-          case "update":
-            objectStore.put(op.record);
             break;
         }
       }
       transaction.oncomplete = () => {
         this.commandQueue.clear();
         if (this.config.debug)
-          console.warn(
+          console.log(
             `[Flush] Successfully completed for "${this.tableName}"`
           );
         resolve();
@@ -654,7 +703,7 @@ var FluentTable = class {
     this.flushTimeout = globalThis.setTimeout(() => {
       if (this.commandQueue.size > 0) {
         if (this.config.debug)
-          console.warn(`[FluentIDB] Auto-flush for table "${this.tableName}"`);
+          console.log(`[FluentIDB] Auto-flush for table "${this.tableName}"`);
         this.queueFlush().catch(console.error);
       }
     }, 100);
@@ -674,7 +723,7 @@ var FluentTable = class {
     if (!existing) {
       this.commandQueue.set(key, { key, record, type: "update" });
       if (this.config.debug)
-        console.warn(
+        console.log(
           `[Queue] update \u2192 added: ${this.formatKeyForLogging(key)}`
         );
     } else {
@@ -682,13 +731,13 @@ var FluentTable = class {
         const merged = { ...existing.record, ...record };
         this.commandQueue.set(key, { key, record: merged, type: "update" });
         if (this.config.debug)
-          console.warn(
+          console.log(
             `[Queue] update \u2192 merged: ${this.formatKeyForLogging(key)}`
           );
       } else if (existing.type === "delete") {
         this.commandQueue.set(key, { key, record, type: "create" });
         if (this.config.debug)
-          console.warn(
+          console.log(
             `[Queue] update after delete \u2192 restoring as create: ${this.formatKeyForLogging(key)}`
           );
       }
@@ -709,7 +758,7 @@ var FluentTable = class {
     }
     if (hasRangeConditions) {
       if (this.config.debug)
-        console.warn(
+        console.log(
           `[FluentTable] remove \u2192 direct deletion by range: ${this.tableName}`,
           records
         );
@@ -734,7 +783,7 @@ var FluentTable = class {
     }
     if (keysToDelete.length > 0) {
       if (this.config.debug)
-        console.warn(
+        console.log(
           `[FluentTable] remove \u2192 to queue: ${this.tableName}`,
           keysToDelete
         );
@@ -745,7 +794,7 @@ var FluentTable = class {
   }
   async update(...records) {
     if (this.config.debug && records.length > 0)
-      console.warn(
+      console.log(
         `[FluentTable] update \xD7${records.length} \u2192 ${this.tableName}`,
         records
       );
@@ -771,9 +820,12 @@ var FluentTable = class {
     return this.database.transaction([this.tableName], mode);
   }
   extractKey(record) {
-    const transaction = this.createTransaction(READONLY);
-    const objectStore = transaction.objectStore(this.tableName);
-    const keyPath = objectStore.keyPath;
+    if (this.keyPathCache === void 0) {
+      const transaction = this.createTransaction(READONLY);
+      const objectStore = transaction.objectStore(this.tableName);
+      this.keyPathCache = objectStore.keyPath;
+    }
+    const keyPath = this.keyPathCache;
     if (!keyPath) return void 0;
     if (Array.isArray(keyPath))
       return keyPath.map(
@@ -865,6 +917,23 @@ function isSchemaMatchingDatabase(schema, database) {
   }
   return true;
 }
+async function cursorEach(store, fn) {
+  return new Promise((resolve, reject) => {
+    const cursor = store.openCursor();
+    cursor.onsuccess = () => {
+      const cur = cursor.result;
+      if (!cur) return resolve();
+      const record = cur.value;
+      try {
+        fn(cur, record);
+        cur.continue();
+      } catch (error) {
+        reject(error);
+      }
+    };
+    cursor.onerror = () => reject(new Error(`Cursor error: ${cursor.error?.message || "unknown"}`));
+  });
+}
 async function normalizeData(db, schema, defaultValues) {
   const tx = db.transaction(Array.from(schema.keys()), READWRITE);
   for (const [tableName, fields] of schema) {
@@ -876,11 +945,7 @@ async function normalizeData(db, schema, defaultValues) {
         return [f];
       })
     );
-    const cursor = store.openCursor();
-    cursor.onsuccess = () => {
-      const cur = cursor.result;
-      if (!cur) return;
-      const record = cur.value;
+    await cursorEach(store, (cur, record) => {
       let changed = false;
       for (const field of expectedFields) {
         if (!(field in record)) {
@@ -889,8 +954,7 @@ async function normalizeData(db, schema, defaultValues) {
         }
       }
       if (changed) cur.update(record);
-      cur.continue();
-    };
+    });
   }
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
