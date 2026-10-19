@@ -80,6 +80,15 @@ describe("FluentIDB Core", () => {
       expect(result?.name).toBe("Alice");
     });
 
+    it("должна выбрасывать ошибку при создании записи с существующим ключом", async () => {
+      const table = new FluentTable<TestUser>("users", db, testConfig);
+      await table.create({ id: "user-dup", name: "Alice" });
+
+      await expect(
+        table.create({ id: "user-dup", name: "Bob" }),
+      ).rejects.toThrow("Duplicate key for create operation");
+    });
+
     it("должна обновлять запись через update", async () => {
       const table = new FluentTable<TestUser>("users", db, testConfig);
       await table.create({ id: "user-2", name: "Bob" });
